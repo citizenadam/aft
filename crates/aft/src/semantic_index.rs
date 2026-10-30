@@ -2335,23 +2335,6 @@ mod image_data_uri_tests {
         let text = "data:IMAGE/PNG;base64,AAAA";
         assert_eq!(neutralize_image_data_uris(text), text);
     }
-
-    #[test]
-    fn serialized_body_carries_no_image_data_uri_prefix() {
-        let texts = vec![
-            "x = \"data:image/png;base64,AAAA\"".to_string(),
-            "plain chunk".to_string(),
-        ];
-        let sanitized: Vec<Cow<'_, str>> = texts
-            .iter()
-            .map(|text| neutralize_image_data_uris(text))
-            .collect();
-        let body = serde_json::json!({ "input": sanitized, "model": "m" });
-        let wire = serde_json::to_string(&body).expect("body serializes");
-        assert!(!wire.contains("data:image/"), "{wire}");
-        assert!(wire.contains("data-uri:image/png;base64,AAAA"), "{wire}");
-        assert!(wire.contains("plain chunk"), "{wire}");
-    }
 }
 
 fn build_openai_embeddings_endpoint(base_url: &str) -> String {
@@ -17355,6 +17338,35 @@ public class Greeter {
         assert!(error.contains("HTTP 400 Bad Request"), "{error}");
         assert!(error.contains("model not found"), "{error}");
         assert!(!error.contains(ROW_TOO_LONG_MARKER_PREFIX), "{error}");
+    }
+
+    #[test]
+    fn openai_compatible_request_neutralizes_image_data_uris_on_the_wire() {
+        // Checks what reaches the server, so the test fails if the embedding
+        // request sends chunk text without neutralizing image data URIs.
+        let server = OverflowEmbeddingServer::rejecting_oversize(1_000_000);
+        let config = overflow_http_config(&server);
+        let mut model = SemanticEmbeddingModel::from_config(&config).unwrap();
+
+        let vectors = model
+            .embed(vec![
+                "x = \"data:image/png;base64,AAAA\"".to_string(),
+                "plain chunk".to_string(),
+            ])
+            .unwrap();
+
+        assert_eq!(vectors.len(), 2);
+        let inputs: Vec<String> = server.requests().into_iter().flatten().collect();
+        assert_eq!(inputs.len(), 2, "{inputs:?}");
+        assert!(
+            inputs.iter().all(|input| !input.contains("data:image/")),
+            "{inputs:?}"
+        );
+        assert!(
+            inputs[0].contains("data-uri:image/png;base64,AAAA"),
+            "{inputs:?}"
+        );
+        assert_eq!(inputs[1], "plain chunk");
     }
 
     #[test]
